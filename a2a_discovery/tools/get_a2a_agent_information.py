@@ -18,7 +18,16 @@ logger.addHandler(plugin_logger_handler)
 
 class GetA2aAgentInformationTool(Tool):
 
-	def _fetch_parameter_options(self, parameter: str, credentials: dict[str, Any]) -> list[ParameterOption]:
+	def _fetch_parameter_options(self, parameter: str) -> list[ParameterOption]:
+		"""
+		获取动态参数选项
+		
+		Args:
+			parameter: 参数名称
+			
+		Returns:
+			参数选项列表
+		"""
 		if parameter != "available_agent_names":
 			return []
 
@@ -27,7 +36,8 @@ class GetA2aAgentInformationTool(Tool):
 			ParameterOption(value="*all*", label={"en_US": "All Registered Agents", "zh_Hans": "所有已注册智能体"})
 		]
 
-		nacos_addr = credentials.get("nacos_addr")
+		# Get credentials from runtime
+		nacos_addr = self.runtime.credentials.get("nacos_addr")
 		if not nacos_addr:
 			return options
 
@@ -40,10 +50,10 @@ class GetA2aAgentInformationTool(Tool):
 		try:
 			agent_names = loop.run_until_complete(list_agents_from_nacos(
 				nacos_addr=nacos_addr,
-				username=credentials.get("nacos_username") or "",
-				password=credentials.get("nacos_password") or "",
-				access_key=credentials.get("nacos_accessKey") or "",
-				secret_key=credentials.get("nacos_secretKey") or "",
+				username=self.runtime.credentials.get("nacos_username") or "",
+				password=self.runtime.credentials.get("nacos_password") or "",
+				access_key=self.runtime.credentials.get("nacos_accessKey") or "",
+				secret_key=self.runtime.credentials.get("nacos_secretKey") or "",
 			))
 			for name in agent_names:
 				options.append(ParameterOption(value=name, label={"en_US": name, "zh_Hans": name}))
