@@ -30,17 +30,14 @@ parameters:
           en_US: Direct URL
           zh_Hans: 直接 URL 访问
   - name: available_agent_names
-    type: string
+    type: dynamic-select
     required: false
     label:
       en_US: Available Agent Names (Nacos Mode)
       zh_Hans: 可用智能体名称列表（Nacos 模式）
     human_description:
-      en_US: "For Nacos mode: Enter multiple agent names separated by commas. Example: translator_agent,search_agent,code_agent"
-      zh_Hans: "Nacos 模式下使用：输入多个智能体名称，用英文逗号分隔。示例：translator_agent,search_agent,code_agent"
-    placeholder:
-      en_US: "agent1,agent2,agent3"
-      zh_Hans: "agent1,agent2,agent3"
+      en_US: "Select from agents discovered in Nacos registry, or choose 'All Registered Agents'."
+      zh_Hans: "从 Nacos 注册中心发现的智能体中选择，或选择「所有已注册智能体」。"
     form: form
   - name: available_agent_urls
     type: string

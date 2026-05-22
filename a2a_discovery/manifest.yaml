@@ -1,7 +1,7 @@
-version: 0.0.1
+version: 0.0.2
 type: plugin
 author: nacos
-name: a2a_discovery
+name: a2a_discovery1
 label:
   en_US: "A2A Agent Client"
   zh_Hans: "A2A Agent 客户端"
@@ -20,7 +20,7 @@ plugins:
   tools:
     - provider/a2a_discovery.yaml
 meta:
-  version: 0.0.1
+  version: 0.0.2
   arch:
     - amd64
     - arm64

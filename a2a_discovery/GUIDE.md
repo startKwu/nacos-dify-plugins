@@ -114,7 +114,7 @@ Study these examples to understand plugin implementation:
 
 #### Manual Packaging
 ```bash
-dify-plugin plugin package ./YOUR_PLUGIN_DIR
+dify-plugin plugin package   D:\inspurCode\github\nacos-dify-plugins\a2a_discovery
 ```
 
 #### Automated GitHub Workflow
