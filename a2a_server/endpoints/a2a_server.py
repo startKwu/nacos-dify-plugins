@@ -4,13 +4,9 @@ A2A Server Endpoint
 统一处理 A2A 协议请求：
 - GET  /a2a/.well-known/agent.json -> Agent Card
 - POST /a2a -> JSON-RPC
-
-自动清理：用 session.storage 维护活跃注册列表。每次请求扫描列表，
-清理超过 60 秒未更新的注册（说明对应的端点已被删除）。
 """
 
 import json
-import time
 import asyncio
 import logging
 from collections.abc import Mapping
@@ -44,9 +40,6 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 logger.addHandler(plugin_logger_handler)
-
-STORAGE_KEY = "nacos_active_registrations"
-STALE_TIMEOUT = 60  # 超过 N 秒未更新视为端点已删除
 
 
 class A2aServerEndpoint(Endpoint):
@@ -99,9 +92,6 @@ class A2aServerEndpoint(Endpoint):
             # 根据用户配置决定是否注册到 Nacos
             self._try_register_to_nacos(agent_card, settings)
 
-            # 刷新当前端点在注册列表中的时间戳，并清理过期注册
-            self._refresh_and_cleanup(agent_card, settings)
-
             return self._json_response(
                 agent_card.model_dump(mode='json', exclude_none=True)
             )
@@ -111,69 +101,6 @@ class A2aServerEndpoint(Endpoint):
                 {"error": "Internal error", "message": str(e)},
                 status=500
             )
-
-    # ========== 注册列表管理（用 session.storage 作"本地文件"） ==========
-
-    def _refresh_and_cleanup(self, agent_card: AgentCard, settings: Mapping) -> None:
-        """
-        用 session.storage 维护活跃注册列表：
-        1. 刷新当前 agent 的时间戳
-        2. 扫描所有记录，清理超过 STALE_TIMEOUT 未更新的
-        """
-        nacos_addr = settings.get('nacos_addr', '')
-        if not nacos_addr:
-            return
-
-        # 1. 读取当前注册列表（首次调用时 storage 中可能无此 key）
-        try:
-            raw = self.session.storage.get(STORAGE_KEY)
-            registrations: dict = json.loads(raw.decode('utf-8')) if raw else {}
-        except Exception:
-            registrations = {}
-
-        # 2. 刷新当前 agent
-        now = time.time()
-        current_reg = {
-            'timestamp': now,
-            'version': agent_card.version,
-            'nacos_addr': nacos_addr,
-            'namespace_id': (settings.get('nacos_namespace_id', 'public') or 'public'),
-            'username': settings.get('nacos_username', '') or '',
-            'password': settings.get('nacos_password', '') or '',
-            'access_key': settings.get('nacos_accessKey', '') or '',
-            'secret_key': settings.get('nacos_secretKey', '') or '',
-            'agent_url': agent_card.url,
-        }
-        registrations[agent_card.name] = current_reg
-
-        # 3. 扫描所有记录，清理过期（60 秒无更新 = 端点已删除）
-        stale = []
-        for name, reg in registrations.items():
-            if name == agent_card.name:
-                continue  # 跳过当前（刚刷新的）
-            if now - reg.get('timestamp', 0) > STALE_TIMEOUT:
-                stale.append(name)
-
-        for name in stale:
-            reg = registrations.pop(name)
-            print(f"[A2A] Found stale registration '{name}' (no request for >{STALE_TIMEOUT}s), deregistering")
-            try:
-                asyncio.run(delete_agent_card(
-                    agent_name=name,
-                    version=reg.get('version', ''),
-                    nacos_addr=reg.get('nacos_addr', ''),
-                    namespace_id=reg.get('namespace_id', 'public'),
-                    username=reg.get('username', ''),
-                    password=reg.get('password', ''),
-                    access_key=reg.get('access_key', ''),
-                    secret_key=reg.get('secret_key', ''),
-                ))
-                print(f"[A2A] Deregistered stale agent '{name}'")
-            except Exception as e:
-                print(f"[A2A] Stale cleanup skipped for '{name}': {e}")
-
-        # 4. 保存更新后的列表
-        self.session.storage.set(STORAGE_KEY, json.dumps(registrations).encode('utf-8'))
 
     def _deregister_agent(self, agent_card: AgentCard) -> bool:
         """
@@ -213,25 +140,11 @@ class A2aServerEndpoint(Endpoint):
             )
             clear_registration_info(self.session, agent_card.name, agent_card.version)
 
-            # 同时也从活跃注册列表中移除
-            self._remove_from_active_regs(agent_card.name)
-
             print(f"[A2A] Deregistered agent '{agent_card.name}' from {prev_addr}")
             return True
         except Exception as e:
             print(f"[A2A] Deregistration skipped: {e}")
             return False
-
-    def _remove_from_active_regs(self, agent_name: str) -> None:
-        """从 session.storage 的活跃列表中移除指定 agent"""
-        try:
-            raw = self.session.storage.get(STORAGE_KEY)
-            registrations: dict = json.loads(raw.decode('utf-8')) if raw else {}
-            if agent_name in registrations:
-                del registrations[agent_name]
-                self.session.storage.set(STORAGE_KEY, json.dumps(registrations).encode('utf-8'))
-        except Exception:
-            pass
 
     def _try_register_to_nacos(self, agent_card: AgentCard, settings: Mapping) -> None:
         """
