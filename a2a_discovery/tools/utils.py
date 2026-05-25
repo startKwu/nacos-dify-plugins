@@ -133,14 +133,15 @@ def parse_available_agents_nacos(available_agent_names: Optional[str]) -> list[s
     """
     Parse agent names for Nacos mode.
 
+    Dify passes multi-select values as a comma-separated string.
     Returns empty list for '*all*' sentinel (meaning "all registered agents").
     """
     if not available_agent_names:
         return []
-    name = available_agent_names.strip()
-    if name == "*all*":
+    names = [n.strip() for n in available_agent_names.split(",") if n.strip()]
+    if not names or names == ["*all*"]:
         return []
-    return [name] if name else []
+    return names
 
 
 def parse_available_agents_url(available_agent_urls: Optional[str]) -> dict[str, str]:
