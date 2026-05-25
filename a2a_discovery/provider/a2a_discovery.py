@@ -38,15 +38,12 @@ class A2aDiscoveryProvider(ToolProvider):
             except Exception as e:
                 raise ToolProviderCredentialValidationError(str(e))
 
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
+        loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(validate_credentials())
         except Exception as e:
             raise ToolProviderCredentialValidationError(str(e))
+        finally:
+            loop.close()
 
 

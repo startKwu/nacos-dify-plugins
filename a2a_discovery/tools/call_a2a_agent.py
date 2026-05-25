@@ -43,12 +43,7 @@ class CallA2aAgentTool(Tool):
 		if not nacos_addr:
 			return options
 
-		try:
-			loop = asyncio.get_event_loop()
-		except RuntimeError:
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-
+		loop = asyncio.new_event_loop()
 		try:
 			agent_names = loop.run_until_complete(list_agents_from_nacos(
 				nacos_addr=nacos_addr,
@@ -61,6 +56,8 @@ class CallA2aAgentTool(Tool):
 				options.append(ParameterOption(value=name, label={"en_US": name, "zh_Hans": name}))
 		except Exception as e:
 			logger.error(f"Failed to fetch agent options from Nacos: {e}")
+		finally:
+			loop.close()
 
 		return options
 
@@ -147,17 +144,14 @@ class CallA2aAgentTool(Tool):
 
 			return response_msg
 
-		try:
-			loop = asyncio.get_event_loop()
-		except RuntimeError:
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-
+		loop = asyncio.new_event_loop()
 		try:
 			call_result = loop.run_until_complete(call_a2a_agent())
 		except Exception as e:
 			logger.error(f"Error calling agent '{target_agent}': {e}")
 			raise
+		finally:
+			loop.close()
 
 		yield self.create_json_message({
 			"target_agent": target_agent,

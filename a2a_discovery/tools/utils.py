@@ -83,17 +83,15 @@ def sync_agent_options_to_yaml(
     """
     Query Nacos for registered agents and update tool YAML options in-place.
     """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    loop = asyncio.new_event_loop()
     try:
         agent_names = loop.run_until_complete(
             list_agents_from_nacos(nacos_addr, username, password, access_key, secret_key, namespace_id)
         )
     except Exception:
         return []
+    finally:
+        loop.close()
 
     if not agent_names:
         return []

@@ -41,12 +41,7 @@ class GetA2aAgentInformationTool(Tool):
 		if not nacos_addr:
 			return options
 
-		try:
-			loop = asyncio.get_event_loop()
-		except RuntimeError:
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-
+		loop = asyncio.new_event_loop()
 		try:
 			agent_names = loop.run_until_complete(list_agents_from_nacos(
 				nacos_addr=nacos_addr,
@@ -59,6 +54,8 @@ class GetA2aAgentInformationTool(Tool):
 				options.append(ParameterOption(value=name, label={"en_US": name, "zh_Hans": name}))
 		except Exception as e:
 			logger.error(f"Failed to fetch agent options from Nacos: {e}")
+		finally:
+			loop.close()
 
 		return options
 
@@ -82,12 +79,7 @@ class GetA2aAgentInformationTool(Tool):
 		available_names = get_agent_names_list(discovery_type, available_agent_names, available_agent_urls)
 		logger.info(f"Getting information for all available agents: {available_names}")
 
-		try:
-			loop = asyncio.get_event_loop()
-		except RuntimeError:
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-
+		loop = asyncio.new_event_loop()
 		try:
 			agents_info = loop.run_until_complete(get_all_agents_info(
 					discovery_type=discovery_type,
@@ -103,6 +95,8 @@ class GetA2aAgentInformationTool(Tool):
 		except Exception as e:
 			logger.error(f"Error getting agents information: {e}")
 			raise
+		finally:
+			loop.close()
 
 		yield self.create_json_message({
 			"agents": agents_info
