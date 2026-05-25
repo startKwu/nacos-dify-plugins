@@ -9,6 +9,7 @@ from typing import Optional
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
+from a2a.types import TaskStatusUpdateEvent, TaskState
 from a2a.utils import new_agent_text_message
 from dify_plugin.config.logger_format import plugin_logger_handler
 
@@ -21,7 +22,7 @@ class DifyAppAgentExecutor(AgentExecutor):
     """
     Dify App 执行器
     将 A2A 请求转换为 Dify App 调用，支持会话管理
-    
+
     支持的 App 类型：
     - Chatbot/Agent/Chatflow (chat) - 使用 session.app.chat.invoke()
     - Workflow - 使用 session.app.workflow.invoke()
@@ -29,22 +30,25 @@ class DifyAppAgentExecutor(AgentExecutor):
     """
 
     def __init__(
-        self, 
-        session, 
+        self,
+        session,
         app_config: dict,
-        conversation_manager: ConversationManager
+        conversation_manager: ConversationManager,
+        nacos_config: dict = None,
     ):
         """
         初始化 Dify App 执行器
-        
+
         Args:
             session: Dify Plugin Session
             app_config: app-selector 返回的 App 配置对象
             conversation_manager: 会话管理器
+            nacos_config: Nacos 配置，注销 Agent Card 时使用
         """
         self.session = session
         self.app_id = app_config.get('app_id', '')
         self.conversation_manager = conversation_manager
+        self.nacos_config = nacos_config or {}
 
     async def execute(
         self,
@@ -199,5 +203,50 @@ class DifyAppAgentExecutor(AgentExecutor):
     async def cancel(
         self, context: RequestContext, event_queue: EventQueue
     ) -> None:
-        """取消执行（当前不支持）"""
-        raise Exception('Cancel operation is not supported')
+        """取消任务，清理会话映射并从 Nacos 注销 Agent Card"""
+        # 1. 发布 TaskState.canceled 事件（A2A 协议要求）
+        await event_queue.enqueue_event(TaskStatusUpdateEvent(
+            task_id=context.task_id,
+            status=TaskStatus(state=TaskState.canceled),
+        ))
+
+        # 2. 清理会话映射
+        context_id = self._get_context_id(context)
+        if context_id:
+            self.conversation_manager.delete_conversation_mapping(context_id)
+
+        # 3. 尝试从 Nacos 注销 Agent Card（失败不影响 cancel 流程）
+        nacos_addr = self.nacos_config.get('nacos_addr', '')
+        if not nacos_addr:
+            return
+
+        try:
+            from .utils import delete_agent_card, delete_agent_card_cache
+
+            await delete_agent_card(
+                agent_name=self.nacos_config.get('agent_name', ''),
+                version=self.nacos_config.get('version', ''),
+                nacos_addr=nacos_addr,
+                namespace_id=self.nacos_config.get('namespace_id', 'public'),
+                username=self.nacos_config.get('username', ''),
+                password=self.nacos_config.get('password', ''),
+                access_key=self.nacos_config.get('access_key', ''),
+                secret_key=self.nacos_config.get('secret_key', ''),
+            )
+
+            # 清理本地缓存
+            delete_agent_card_cache(
+                session=self.session,
+                nacos_addr=nacos_addr,
+                namespace_id=self.nacos_config.get('namespace_id', 'public'),
+                agent_name=self.nacos_config.get('agent_name', ''),
+                version=self.nacos_config.get('version', ''),
+            )
+
+            logger.info(
+                f"Deregistered agent '{self.nacos_config.get('agent_name')}' "
+                f"from Nacos at {nacos_addr}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to deregister agent from Nacos: {e}")

@@ -38,6 +38,42 @@ async def register_agent_card(
 	)
 
 
+async def delete_agent_card(
+		agent_name: str,
+		version: str,
+		nacos_addr: str,
+		namespace_id: str,
+		username: str,
+		password: str,
+		access_key: str,
+		secret_key: str
+):
+	"""从 Nacos 注销 Agent Card"""
+	if nacos_addr is None:
+		raise ValueError("when type is nacos, nacos_addr is required")
+	if ':' not in nacos_addr.split('//')[-1]:
+		nacos_addr = f"{nacos_addr}:8848"
+
+	nacos_client_config = ClientConfigBuilder().server_address(
+			nacos_addr).namespace_id(
+			namespace_id).username(
+			username).password(
+			password).access_key(
+			access_key).secret_key(
+			secret_key).build()
+	nacos_ai_maintainer_service = await NacosAIMaintainerService.create_ai_service(
+			nacos_client_config)
+	result = await nacos_ai_maintainer_service.delete_agent(
+			agent_name=agent_name,
+			namespace_id=namespace_id,
+			version=version,
+	)
+	if not result:
+		raise RuntimeError(
+			f"Nacos delete_agent failed for '{agent_name}' (v{version})"
+		)
+
+
 async def get_agent_card(
 		agent_name: str,
 		version: str,
@@ -169,6 +205,75 @@ def set_cached_agent_card(
 	except Exception as e:
 		print(f"[AgentCardCache] Error writing cache: {e}")
 		return False
+
+
+def delete_agent_card_cache(
+		session,
+		nacos_addr: str,
+		namespace_id: str,
+		agent_name: str,
+		version: str
+) -> bool:
+	"""删除本地缓存的 AgentCard"""
+	key = _build_cache_key(nacos_addr, namespace_id, agent_name, version)
+
+	try:
+		session.storage.delete(key)
+		print(f"[AgentCardCache] Deleted cache: {agent_name}")
+		return True
+	except Exception as e:
+		print(f"[AgentCardCache] Error deleting cache: {e}")
+		return False
+
+
+# ============== 注册追踪（独立于缓存 key，配置变更后仍可找到） ==============
+
+REG_INFO_PREFIX = "agent_reg_info"
+
+
+def _build_reg_info_key(agent_name: str, version: str) -> str:
+    """构建注册追踪 key，只包含 agent_name:version，不包含 nacos_addr"""
+    return f"{REG_INFO_PREFIX}:{agent_name}:{version}"
+
+
+def get_registration_info(session, agent_name: str, version: str) -> Optional[dict]:
+    """获取上次注册到 Nacos 的连接信息（用于配置变更后注销）"""
+    key = _build_reg_info_key(agent_name, version)
+    try:
+        value = session.storage.get(key)
+        return json.loads(value.decode('utf-8')) if value else None
+    except Exception:
+        return None
+
+
+def save_registration_info(
+        session,
+        agent_name: str,
+        version: str,
+        nacos_addr: str,
+        namespace_id: str,
+        username: str = '',
+        password: str = '',
+        access_key: str = '',
+        secret_key: str = ''
+):
+    """保存注册信息，便于配置变更后注销"""
+    key = _build_reg_info_key(agent_name, version)
+    data = {
+        'nacos_addr': nacos_addr,
+        'namespace_id': namespace_id,
+        'username': username,
+        'password': password,
+        'access_key': access_key,
+        'secret_key': secret_key,
+    }
+    session.storage.set(key, json.dumps(data).encode('utf-8'))
+
+
+def clear_registration_info(session, agent_name: str, version: str):
+    """清除注册追踪信息"""
+    key = _build_reg_info_key(agent_name, version)
+    session.storage.delete(key)
 
 
 def needs_registration(current_card: AgentCard,

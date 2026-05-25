@@ -125,3 +125,4 @@ settings:
 endpoints:
   - endpoints/a2a_server.yaml
   - endpoints/agent_card.yaml
+  - endpoints/delete_agent.yaml

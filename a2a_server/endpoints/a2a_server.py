@@ -4,9 +4,13 @@ A2A Server Endpoint
 统一处理 A2A 协议请求：
 - GET  /a2a/.well-known/agent.json -> Agent Card
 - POST /a2a -> JSON-RPC
+
+自动清理：用 session.storage 维护活跃注册列表。每次请求扫描列表，
+清理超过 60 秒未更新的注册（说明对应的端点已被删除）。
 """
 
 import json
+import time
 import asyncio
 import logging
 from collections.abc import Mapping
@@ -26,20 +30,29 @@ from .adapters import StarletteRequestAdapter, ResponseAdapter
 from .conversation import ConversationManager
 from .executor import DifyAppAgentExecutor
 from .utils import (
-    register_agent_card, 
+    register_agent_card,
+    delete_agent_card,
     get_agent_card,
-    get_cached_agent_card, 
-    set_cached_agent_card, 
-    needs_registration
+    get_cached_agent_card,
+    set_cached_agent_card,
+    delete_agent_card_cache,
+    needs_registration,
+    get_registration_info,
+    save_registration_info,
+    clear_registration_info,
 )
 
 logger = logging.getLogger(__name__)
 logger.addHandler(plugin_logger_handler)
 
+STORAGE_KEY = "nacos_active_registrations"
+STALE_TIMEOUT = 60  # 超过 N 秒未更新视为端点已删除
+
+
 class A2aServerEndpoint(Endpoint):
     """
     A2A 协议统一端点
-    
+
     根据 HTTP 方法分发请求：
     - GET  -> 返回 Agent Card
     - POST -> 处理 JSON-RPC
@@ -49,25 +62,46 @@ class A2aServerEndpoint(Endpoint):
         """请求入口，根据 HTTP 方法分发"""
         method = r.method.upper()
         logger.info(f"A2A Plugin received: {method} {r.path}")
-        
+
         if method == "GET":
+            # 查询参数 ?deregister=true 仅注销，不重新注册
+            if r.args.get('deregister', '').lower() == 'true':
+                return self._handle_deregister(settings)
             return self._handle_agent_card(settings)
         elif method == "POST":
             return self._handle_jsonrpc(r, settings)
+        elif method == "DELETE":
+            return self._handle_deregister(settings)
         else:
             return self._json_response(
                 {"error": "Method Not Allowed"},
                 status=405
             )
 
+    def _handle_deregister(self, settings: Mapping) -> Response:
+        """仅从 Nacos 注销，不返回 Agent Card"""
+        try:
+            agent_card = self._build_agent_card(settings)
+            self._deregister_agent(agent_card)
+            return self._json_response({"status": "ok", "message": f"Agent '{agent_card.name}' deregistered"})
+        except Exception as e:
+            logger.exception("Error during deregistration")
+            return self._json_response(
+                {"error": "Deregistration failed", "message": str(e)},
+                status=500
+            )
+
     def _handle_agent_card(self, settings: Mapping) -> Response:
         """处理 GET 请求，返回 Agent Card 并根据配置注册到 Nacos"""
         try:
             agent_card = self._build_agent_card(settings)
-            
+
             # 根据用户配置决定是否注册到 Nacos
             self._try_register_to_nacos(agent_card, settings)
-            
+
+            # 刷新当前端点在注册列表中的时间戳，并清理过期注册
+            self._refresh_and_cleanup(agent_card, settings)
+
             return self._json_response(
                 agent_card.model_dump(mode='json', exclude_none=True)
             )
@@ -78,33 +112,153 @@ class A2aServerEndpoint(Endpoint):
                 status=500
             )
 
+    # ========== 注册列表管理（用 session.storage 作"本地文件"） ==========
+
+    def _refresh_and_cleanup(self, agent_card: AgentCard, settings: Mapping) -> None:
+        """
+        用 session.storage 维护活跃注册列表：
+        1. 刷新当前 agent 的时间戳
+        2. 扫描所有记录，清理超过 STALE_TIMEOUT 未更新的
+        """
+        nacos_addr = settings.get('nacos_addr', '')
+        if not nacos_addr:
+            return
+
+        # 1. 读取当前注册列表（首次调用时 storage 中可能无此 key）
+        try:
+            raw = self.session.storage.get(STORAGE_KEY)
+            registrations: dict = json.loads(raw.decode('utf-8')) if raw else {}
+        except Exception:
+            registrations = {}
+
+        # 2. 刷新当前 agent
+        now = time.time()
+        current_reg = {
+            'timestamp': now,
+            'version': agent_card.version,
+            'nacos_addr': nacos_addr,
+            'namespace_id': (settings.get('nacos_namespace_id', 'public') or 'public'),
+            'username': settings.get('nacos_username', '') or '',
+            'password': settings.get('nacos_password', '') or '',
+            'access_key': settings.get('nacos_accessKey', '') or '',
+            'secret_key': settings.get('nacos_secretKey', '') or '',
+            'agent_url': agent_card.url,
+        }
+        registrations[agent_card.name] = current_reg
+
+        # 3. 扫描所有记录，清理过期（60 秒无更新 = 端点已删除）
+        stale = []
+        for name, reg in registrations.items():
+            if name == agent_card.name:
+                continue  # 跳过当前（刚刷新的）
+            if now - reg.get('timestamp', 0) > STALE_TIMEOUT:
+                stale.append(name)
+
+        for name in stale:
+            reg = registrations.pop(name)
+            print(f"[A2A] Found stale registration '{name}' (no request for >{STALE_TIMEOUT}s), deregistering")
+            try:
+                asyncio.run(delete_agent_card(
+                    agent_name=name,
+                    version=reg.get('version', ''),
+                    nacos_addr=reg.get('nacos_addr', ''),
+                    namespace_id=reg.get('namespace_id', 'public'),
+                    username=reg.get('username', ''),
+                    password=reg.get('password', ''),
+                    access_key=reg.get('access_key', ''),
+                    secret_key=reg.get('secret_key', ''),
+                ))
+                print(f"[A2A] Deregistered stale agent '{name}'")
+            except Exception as e:
+                print(f"[A2A] Stale cleanup skipped for '{name}': {e}")
+
+        # 4. 保存更新后的列表
+        self.session.storage.set(STORAGE_KEY, json.dumps(registrations).encode('utf-8'))
+
+    def _deregister_agent(self, agent_card: AgentCard) -> bool:
+        """
+        使用之前保存的注册信息从 Nacos 注销 Agent。
+
+        Returns:
+            True 表示成功注销，False 表示没有找到注册信息或注销失败
+        """
+        prev_reg = get_registration_info(
+            self.session, agent_card.name, agent_card.version
+        )
+        if not prev_reg:
+            print(f"[A2A] No registration info for '{agent_card.name}', nothing to deregister")
+            return False
+
+        prev_addr = prev_reg.get('nacos_addr', '')
+        prev_ns = prev_reg.get('namespace_id', 'public')
+        if not prev_addr:
+            clear_registration_info(self.session, agent_card.name, agent_card.version)
+            return False
+
+        try:
+            print(f"[A2A] Deregistering agent '{agent_card.name}' from Nacos at {prev_addr}")
+            asyncio.run(delete_agent_card(
+                agent_name=agent_card.name,
+                version=agent_card.version,
+                nacos_addr=prev_addr,
+                namespace_id=prev_ns,
+                username=prev_reg.get('username', ''),
+                password=prev_reg.get('password', ''),
+                access_key=prev_reg.get('access_key', ''),
+                secret_key=prev_reg.get('secret_key', ''),
+            ))
+            delete_agent_card_cache(
+                self.session, prev_addr, prev_ns,
+                agent_card.name, agent_card.version
+            )
+            clear_registration_info(self.session, agent_card.name, agent_card.version)
+
+            # 同时也从活跃注册列表中移除
+            self._remove_from_active_regs(agent_card.name)
+
+            print(f"[A2A] Deregistered agent '{agent_card.name}' from {prev_addr}")
+            return True
+        except Exception as e:
+            print(f"[A2A] Deregistration skipped: {e}")
+            return False
+
+    def _remove_from_active_regs(self, agent_name: str) -> None:
+        """从 session.storage 的活跃列表中移除指定 agent"""
+        try:
+            raw = self.session.storage.get(STORAGE_KEY)
+            registrations: dict = json.loads(raw.decode('utf-8')) if raw else {}
+            if agent_name in registrations:
+                del registrations[agent_name]
+                self.session.storage.set(STORAGE_KEY, json.dumps(registrations).encode('utf-8'))
+        except Exception:
+            pass
+
     def _try_register_to_nacos(self, agent_card: AgentCard, settings: Mapping) -> None:
         """
         尝试将 AgentCard 注册到 Nacos
-        
+
         根据用户配置的 enable_nacos_registry 开关决定是否注册。
         使用缓存避免频繁查询和注册，只有当 AgentCard 变更时才注册。
+        当配置变更或禁用时，自动从 Nacos 注销旧记录。
         注册失败不影响 Agent Card 的正常返回。
         """
-        # 检查是否启用 Nacos 注册
-        enable_nacos = settings.get('enable_nacos_registry', True)
-        if not enable_nacos:
-            logger.debug("Nacos registry is disabled by user settings")
-            return
-        
-        # 检查必要参数
-        nacos_addr = settings.get('nacos_addr', '')
-        if not nacos_addr:
-            logger.debug("Nacos address not configured, skipping registration")
-            return
-        
         # 获取 Nacos 配置参数
-        namespace_id = settings.get('nacos_namespace_id', 'public') or 'public'
+        enable_nacos = settings.get('enable_nacos_registry', True)
+        nacos_addr = settings.get('nacos_addr', '')
+        namespace_id = (settings.get('nacos_namespace_id', 'public') or 'public')
         username = settings.get('nacos_username', '') or ''
         password = settings.get('nacos_password', '') or ''
         access_key = settings.get('nacos_accessKey', '') or ''
         secret_key = settings.get('nacos_secretKey', '') or ''
-        
+
+        # ========== 检查是否需要注销（配置删除/禁用时） ==========
+        reg_disabled = not enable_nacos or not nacos_addr
+
+        if reg_disabled:
+            self._deregister_agent(agent_card)
+            return
+
+        # ========== 执行注册 ==========
         try:
             # 1. 从缓存获取已注册的 AgentCard（缓存过期会自动从 Nacos 获取）
             cached_card = get_cached_agent_card(
@@ -118,13 +272,36 @@ class A2aServerEndpoint(Endpoint):
                 access_key=access_key,
                 secret_key=secret_key
             )
-            
-            # 2. 判断是否需要注册（比较 name, description, url）
+
+            # 2. 判断是否需要注册
             if not needs_registration(agent_card, cached_card):
                 print(f"[A2A] Agent '{agent_card.name}' already registered, skipping")
                 return
-            
-            # 3. 执行注册
+
+            # 3. 如果 URL 变更，先注销旧记录（避免 Nacos 中残留旧 URL 实例）
+            if cached_card and cached_card.url != agent_card.url:
+                try:
+                    print(f"[A2A] URL changed, deregistering old card first")
+                    asyncio.run(delete_agent_card(
+                        agent_name=agent_card.name,
+                        version=agent_card.version,
+                        nacos_addr=nacos_addr,
+                        namespace_id=namespace_id,
+                        username=username,
+                        password=password,
+                        access_key=access_key,
+                        secret_key=secret_key,
+                    ))
+                    delete_agent_card_cache(
+                        self.session, nacos_addr, namespace_id,
+                        agent_card.name, agent_card.version
+                    )
+                    print(f"[A2A] Old card deregistered (was: {cached_card.url})")
+                except Exception as e:
+                    # Nacos 可能没有旧记录（首次部署等情况），忽略错误
+                    print(f"[A2A] Old card deregistration skipped: {e}")
+
+            # 4. 执行注册
             asyncio.run(register_agent_card(
                 agent_card=agent_card,
                 nacos_addr=nacos_addr,
@@ -134,8 +311,8 @@ class A2aServerEndpoint(Endpoint):
                 access_key=access_key,
                 secret_key=secret_key,
             ))
-            
-            # 4. 注册成功后从 Nacos 查询并更新缓存
+
+            # 5. 注册成功后从 Nacos 查询并更新缓存
             remote_card = asyncio.run(get_agent_card(
                 agent_name=agent_card.name,
                 version=agent_card.version,
@@ -146,7 +323,7 @@ class A2aServerEndpoint(Endpoint):
                 access_key=access_key,
                 secret_key=secret_key,
             ))
-            
+
             if remote_card:
                 set_cached_agent_card(
                     session=self.session,
@@ -154,10 +331,17 @@ class A2aServerEndpoint(Endpoint):
                     namespace_id=namespace_id,
                     agent_card=remote_card
                 )
-            
+
+            # 6. 保存注册信息（用于后续配置变更时取消注册）
+            save_registration_info(
+                self.session, agent_card.name, agent_card.version,
+                nacos_addr, namespace_id,
+                username, password, access_key, secret_key
+            )
+
             print(f"[A2A] Successfully registered agent '{agent_card.name}' to Nacos at {nacos_addr}")
             logger.info(f"Agent '{agent_card.name}' registered to Nacos at {nacos_addr}")
-            
+
         except Exception as e:
             # 注册失败不影响正常流程，仅记录日志
             print(f"[A2A] Nacos registration failed (non-blocking): {e}")
@@ -169,48 +353,58 @@ class A2aServerEndpoint(Endpoint):
             # 1. 解析 JSON-RPC 请求
             request_data = r.get_json(force=True)
             logger.debug(f"JSON-RPC request: {request_data}")
-            
+
             # 2. 创建 Starlette 请求适配器
             starlette_request = StarletteRequestAdapter(r)
-            
+
             # 3. 获取 App 配置
             app_config = settings.get('app', {})
             app_id = app_config.get('app_id', '')
-            
+
             # 4. 创建会话管理器
             conversation_manager = ConversationManager(
                 session=self.session,
                 app_id=app_id,
             )
-            
+
             # 5. 创建执行器
             agent_executor = DifyAppAgentExecutor(
                 session=self.session,
                 app_config=app_config,
                 conversation_manager=conversation_manager,
+                nacos_config={
+                    'nacos_addr': settings.get('nacos_addr', ''),
+                    'namespace_id': settings.get('nacos_namespace_id', 'public') or 'public',
+                    'username': settings.get('nacos_username', '') or '',
+                    'password': settings.get('nacos_password', '') or '',
+                    'access_key': settings.get('nacos_accessKey', '') or '',
+                    'secret_key': settings.get('nacos_secretKey', '') or '',
+                    'agent_name': settings.get('agent_name', 'Dify A2A Agent'),
+                    'version': settings.get('agent_version', '1.0.0'),
+                },
             )
-            
+
             # 6. 创建请求处理器
             request_handler = DefaultRequestHandler(
                 agent_executor=agent_executor,
                 task_store=InMemoryTaskStore(),
             )
-            
+
             # 7. 创建 A2A 应用
             agent_card = self._build_agent_card(settings)
             app = A2AStarletteApplication(
                 agent_card=agent_card,
                 http_handler=request_handler,
             )
-            
+
             # 8. 调用处理方法（异步转同步）
             starlette_response = asyncio.run(
                 app._handle_requests(starlette_request)
             )
-            
+
             # 9. 转换响应
             return ResponseAdapter.to_werkzeug(starlette_response)
-            
+
         except json.JSONDecodeError as e:
             return self._json_error_response(
                 code=-32700,
@@ -235,14 +429,14 @@ class A2aServerEndpoint(Endpoint):
             tags=['dify', 'chatbot'],
             examples=['Hello', 'Help me with...'],
         )
-        
+
         # 创建能力声明（所有字段可选）
         capabilities = AgentCapabilities(
             streaming=False,  # 不支持流式响应
             state_transition_history=False,
             push_notifications=False,
         )
-        
+
         return AgentCard(
             name=settings.get('agent_name', 'Dify A2A Agent'),
             description=settings.get('agent_description', 'A2A Agent powered by Dify'),
@@ -263,10 +457,10 @@ class A2aServerEndpoint(Endpoint):
         )
 
     def _json_error_response(
-        self, 
-        code: int, 
-        message: str, 
-        data: str = None, 
+        self,
+        code: int,
+        message: str,
+        data: str = None,
         request_id=None,
         status: int = 200
     ) -> Response:
