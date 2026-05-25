@@ -52,17 +52,17 @@ parameters:
       en_US: "{\"agent1\":\"http://url1\",\"agent2\":\"http://url2\"}"
       zh_Hans: "{\"agent1\":\"http://url1\",\"agent2\":\"http://url2\"}"
     form: form
-  - name: namespace_id
-    type: string
-    required: false
-    label:
-      en_US: Nacos Namespace ID
-      zh_Hans: Nacos 命名空间 ID
-    human_description:
-      en_US: "Nacos namespace ID for agent discovery. Required when using Nacos mode. Default: public"
-      zh_Hans: "Nacos 命名空间 ID，用于智能体发现。使用 Nacos 模式时需填写。默认值：public"
-    form: form
-    default: public
+  # - name: namespace_id
+  #   type: string
+  #   required: false
+  #   label:
+  #     en_US: Nacos Namespace ID
+  #     zh_Hans: Nacos 命名空间 ID
+  #   human_description:
+  #     en_US: "Nacos namespace ID for agent discovery. Required when using Nacos mode. Default: public"
+  #     zh_Hans: "Nacos 命名空间 ID，用于智能体发现。使用 Nacos 模式时需填写。默认值：public"
+  #   form: form
+  #   default: public
 extra:
   python:
     source: tools/get_a2a_agent_information.py

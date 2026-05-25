@@ -66,7 +66,7 @@ class GetA2aAgentInformationTool(Tool):
 		discovery_type = tool_parameters.get("discovery_type")
 		available_agent_names = tool_parameters.get("available_agent_names")
 		available_agent_urls = tool_parameters.get("available_agent_urls")
-		namespace_id = tool_parameters.get("namespace_id")
+		namespace_id = tool_parameters.get("namespace_id") or "public"
 
 		# Get Nacos credentials
 		nacos_addr = self.runtime.credentials.get("nacos_addr")
