@@ -1,7 +1,40 @@
 import asyncio
+import concurrent.futures
 import json
 import os
-from typing import Optional
+from typing import Optional, TypeVar
+
+T = TypeVar("T")
+
+_async_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=20,
+    thread_name_prefix="a2a-async",
+)
+
+
+def _run_coro(coro):
+    """Run a coroutine in a fresh event loop on the current thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def run_async(coro) -> T:
+    """Run a coroutine from a synchronous context, safe with or without a running loop."""
+    try:
+        main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    # 线程池按需创建线程 + 独立事件循环，用完即关
+    try:
+        return _async_pool.submit(_run_coro, coro).result()
+    except RuntimeError:
+        # 兜底：如果线程池方案失败（如事件循环策略问题），走主循环
+        return asyncio.run_coroutine_threadsafe(coro, main_loop).result()
 
 import httpx
 import yaml
@@ -83,15 +116,12 @@ def sync_agent_options_to_yaml(
     """
     Query Nacos for registered agents and update tool YAML options in-place.
     """
-    loop = asyncio.new_event_loop()
     try:
-        agent_names = loop.run_until_complete(
+        agent_names = run_async(
             list_agents_from_nacos(nacos_addr, username, password, access_key, secret_key, namespace_id)
         )
     except Exception:
         return []
-    finally:
-        loop.close()
 
     if not agent_names:
         return []

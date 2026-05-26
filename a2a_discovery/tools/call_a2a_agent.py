@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from collections.abc import Generator
 from typing import Any
@@ -11,7 +10,7 @@ from dify_plugin import Tool
 from dify_plugin.config.logger_format import plugin_logger_handler
 from dify_plugin.entities.tool import ToolInvokeMessage, ParameterOption
 
-from tools.utils import get_target_agent_card, get_agent_names_list, list_agents_from_nacos
+from tools.utils import get_target_agent_card, get_agent_names_list, list_agents_from_nacos, run_async
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -43,9 +42,8 @@ class CallA2aAgentTool(Tool):
 		if not nacos_addr:
 			return options
 
-		loop = asyncio.new_event_loop()
 		try:
-			agent_names = loop.run_until_complete(list_agents_from_nacos(
+			agent_names = run_async(list_agents_from_nacos(
 				nacos_addr=nacos_addr,
 				username=self.runtime.credentials.get("nacos_username") or "",
 				password=self.runtime.credentials.get("nacos_password") or "",
@@ -56,8 +54,6 @@ class CallA2aAgentTool(Tool):
 				options.append(ParameterOption(value=name, label={"en_US": name, "zh_Hans": name}))
 		except Exception as e:
 			logger.error(f"Failed to fetch agent options from Nacos: {e}")
-		finally:
-			loop.close()
 
 		return options
 
@@ -144,14 +140,12 @@ class CallA2aAgentTool(Tool):
 
 			return response_msg
 
-		loop = asyncio.new_event_loop()
 		try:
-			call_result = loop.run_until_complete(call_a2a_agent())
+			call_result = run_async(call_a2a_agent())
 		except Exception as e:
 			logger.error(f"Error calling agent '{target_agent}': {e}")
 			raise
-		finally:
-			loop.close()
+
 
 		yield self.create_json_message({
 			"target_agent": target_agent,

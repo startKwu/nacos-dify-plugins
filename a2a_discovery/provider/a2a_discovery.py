@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any
 
 from dify_plugin import ToolProvider
@@ -6,12 +5,14 @@ from dify_plugin.errors.tool import ToolProviderCredentialValidationError
 from maintainer.ai.nacos_ai_maintainer_service import NacosAIMaintainerService
 from v2.nacos import ClientConfigBuilder
 
+from tools.utils import run_async
+
 
 class A2aDiscoveryProvider(ToolProvider):
 
     def _validate_credentials(self, credentials: dict[str, Any]) -> None:
 
-        async def validate_credentials() -> None:
+        async def _validate() -> None:
             try:
                 nacos_addr = credentials.get("nacos_addr")
                 nacos_username = credentials.get("nacos_username") or ""
@@ -38,12 +39,6 @@ class A2aDiscoveryProvider(ToolProvider):
             except Exception as e:
                 raise ToolProviderCredentialValidationError(str(e))
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(validate_credentials())
-        except Exception as e:
-            raise ToolProviderCredentialValidationError(str(e))
-        finally:
-            loop.close()
+        run_async(_validate())
 
 
