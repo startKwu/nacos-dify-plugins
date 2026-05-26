@@ -7,7 +7,7 @@ A2A Server Endpoint
 """
 
 import json
-import asyncio
+from .utils import run_async
 import logging
 from collections.abc import Mapping
 
@@ -124,7 +124,7 @@ class A2aServerEndpoint(Endpoint):
 
         try:
             print(f"[A2A] Deregistering agent '{agent_card.name}' from Nacos at {prev_addr}")
-            asyncio.run(delete_agent_card(
+            run_async(delete_agent_card(
                 agent_name=agent_card.name,
                 version=agent_card.version,
                 nacos_addr=prev_addr,
@@ -191,11 +191,11 @@ class A2aServerEndpoint(Endpoint):
                 print(f"[A2A] Agent '{agent_card.name}' already registered, skipping")
                 return
 
-            # 3. 如果 URL 变更，先注销旧记录（避免 Nacos 中残留旧 URL 实例）
-            if cached_card and cached_card.url != agent_card.url:
+            # 3. Agent 已存在 Nacos，先注销旧记录（Nacos 不支持同名 agent 直接覆盖）
+            if cached_card:
                 try:
-                    print(f"[A2A] URL changed, deregistering old card first")
-                    asyncio.run(delete_agent_card(
+                    print(f"[A2A] Agent already exists, deregistering old card first")
+                    run_async(delete_agent_card(
                         agent_name=agent_card.name,
                         version=agent_card.version,
                         nacos_addr=nacos_addr,
@@ -215,7 +215,7 @@ class A2aServerEndpoint(Endpoint):
                     print(f"[A2A] Old card deregistration skipped: {e}")
 
             # 4. 执行注册
-            asyncio.run(register_agent_card(
+            run_async(register_agent_card(
                 agent_card=agent_card,
                 nacos_addr=nacos_addr,
                 namespace_id=namespace_id,
@@ -226,7 +226,7 @@ class A2aServerEndpoint(Endpoint):
             ))
 
             # 5. 注册成功后从 Nacos 查询并更新缓存
-            remote_card = asyncio.run(get_agent_card(
+            remote_card = run_async(get_agent_card(
                 agent_name=agent_card.name,
                 version=agent_card.version,
                 nacos_addr=nacos_addr,
@@ -311,7 +311,7 @@ class A2aServerEndpoint(Endpoint):
             )
 
             # 8. 调用处理方法（异步转同步）
-            starlette_response = asyncio.run(
+            starlette_response = run_async(
                 app._handle_requests(starlette_request)
             )
 

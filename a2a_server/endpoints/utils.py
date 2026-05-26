@@ -1,7 +1,37 @@
 import json
 import time
 import asyncio
-from typing import Optional
+import concurrent.futures
+from typing import Optional, TypeVar
+
+T = TypeVar("T")
+
+_async_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=20,
+    thread_name_prefix="a2a-server-async",
+)
+
+
+def _run_coro(coro):
+    """Run a coroutine in a fresh event loop on the current thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def run_async(coro) -> T:
+    """Run a coroutine from a sync context, safe with or without a running loop."""
+    try:
+        main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    try:
+        return _async_pool.submit(_run_coro, coro).result()
+    except RuntimeError:
+        return asyncio.run_coroutine_threadsafe(coro, main_loop).result()
 
 from a2a.types import AgentCard
 from maintainer.ai.nacos_ai_maintainer_service import NacosAIMaintainerService
@@ -160,7 +190,7 @@ def get_cached_agent_card(
 
 		# 缓存不存在或已过期，从 Nacos 获取
 		print(f"[AgentCardCache] Fetching from Nacos: {agent_name}")
-		agent_card = asyncio.run(get_agent_card(
+		agent_card = run_async(get_agent_card(
 			agent_name=agent_name,
 			version=version,
 			nacos_addr=nacos_addr,
